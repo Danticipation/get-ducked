@@ -40,3 +40,9 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Functions backend
+functions/node_modules/
+functions/lib/
+functions/.env
+functions/.env.local
