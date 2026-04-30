@@ -21,14 +21,29 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ],
+      "package": "com.onlydanz.ducku"
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-sharing",
-      ["expo-camera", { "cameraPermission": "Allow Duck U to scan duck QR codes." }]
-    ]
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Duck U to scan duck QR codes."
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "2dcb9313-bd8b-4747-99f4-f26f54007519"
+      }
+    },
+    "owner": "onlydanz"
   }
 }

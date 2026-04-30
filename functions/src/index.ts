@@ -33,6 +33,9 @@ export const processDuckEvent = functions.firestore
   .onCreate(async (snap, context) => {
     const eventId = context.params.eventId;
     const data = snap.data();
+
+    if (data.processed === true) return;
+
     const fromUid = data.fromUid as string;
     const toUid = data.toUid as string;
     const timestamp = data.timestamp as admin.firestore.Timestamp;
@@ -75,6 +78,7 @@ export const processDuckEvent = functions.firestore
       pointsAwarded: points,
       isRevenge: isSelfDuck ? false : isRevenge,
       chainLength: chainLength || admin.firestore.FieldValue.delete(),
+      processed: true,
     });
 
     const fromUserSnap = await db.collection(USERS).doc(fromUid).get();
@@ -112,9 +116,7 @@ export const processDuckEvent = functions.firestore
             body: `You just got ducked by ${fromDisplayName}!`,
           },
         });
-      } catch (_) {
-        // ignore FCM errors
-      }
+      } catch (_) {}
     }
   });
 

@@ -1,6 +1,7 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { auth } from '../config/firebase';
+import { doc, onSnapshot, Unsubscribe } from 'firebase/firestore';
+import { auth, db } from '../config/firebase';
 import { getUserProfile, createUserProfile } from '../services/userService';
 import type { UserProfile } from '../types';
 
@@ -17,37 +18,71 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  const profileUnsubRef = useRef<Unsubscribe | null>(null);
 
+  // Kept for backwards compat. With onSnapshot, profile refreshes automatically;
+  // callers that still invoke refreshProfile() get a no-op that resolves immediately.
   const refreshProfile = async () => {
-    if (!user) return;
-    const p = await getUserProfile(user.uid);
-    setProfile(p ?? null);
+    return;
   };
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (fbUser) => {
+    const unsubAuth = onAuthStateChanged(auth, async (fbUser) => {
+      // Tear down any existing profile listener first.
+      if (profileUnsubRef.current) {
+        profileUnsubRef.current();
+        profileUnsubRef.current = null;
+      }
+
       setUser(fbUser ?? null);
+
       if (!fbUser) {
         setProfile(null);
         setLoading(false);
         return;
       }
-      let p = await getUserProfile(fbUser.uid);
-      if (!p) {
-        p = await createUserProfile(fbUser.uid, {
-          displayName: fbUser.displayName ?? undefined,
-          avatarUrl: fbUser.photoURL ?? undefined,
-        });
-      }
-      setProfile(p as UserProfile);
-      setLoading(false);
-    });
-    return () => unsub();
-  }, []);
 
-  useEffect(() => {
-    if (user) refreshProfile();
-  }, [user?.uid]);
+      // Make sure the profile doc exists before we start listening to it.
+      try {
+        const existing = await getUserProfile(fbUser.uid);
+        if (!existing) {
+          await createUserProfile(fbUser.uid, {
+            displayName: fbUser.displayName ?? undefined,
+            avatarUrl: fbUser.photoURL ?? undefined,
+          });
+        }
+      } catch (e) {
+        console.error('Profile bootstrap failed:', e);
+      }
+
+      // Attach a real-time listener so the UI reflects Cloud Function writes
+      // and cross-device changes within 1-2 seconds.
+      const ref = doc(db, 'users', fbUser.uid);
+      profileUnsubRef.current = onSnapshot(
+        ref,
+        (snap) => {
+          if (snap.exists()) {
+            setProfile({ uid: snap.id, ...snap.data() } as UserProfile);
+          } else {
+            setProfile(null);
+          }
+          setLoading(false);
+        },
+        (err) => {
+          console.error('profile snapshot error:', err);
+          setLoading(false);
+        }
+      );
+    });
+
+    return () => {
+      if (profileUnsubRef.current) {
+        profileUnsubRef.current();
+        profileUnsubRef.current = null;
+      }
+      unsubAuth();
+    };
+  }, []);
 
   return (
     <AuthContext.Provider value={{ user, profile, loading, refreshProfile }}>

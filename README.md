@@ -1,100 +1,177 @@
-# Duck U ~ Don't be Wack, Do Quack!
+# Duck U
 
-React Native (Expo) + Firebase app: scan QR stickers to "duck" friends, earn points, streaks, and compete on leaderboards.
-
-## Repo structure
-
-- **`duck-u/`** – Expo app (iOS + Android)
-- **`docs/`** – Design and implementation plans
-- **`functions/`** – Firebase Cloud Functions (scoring, weekly leaderboard, push)
-- **`firestore.rules`** – Firestore security rules
-- **`firestore.indexes.json`** – Firestore composite indexes
-
-## How to run the app (no phone needed)
-
-1. **Open a terminal you can see**  
-   In Cursor: **View → Terminal** (or `` Ctrl+` ``). Use this same terminal for the steps below.
-
-2. **Start the app**
-   ```bash
-   cd duck-u
-   npm install
-   npx expo start
-   ```
-   Wait until it says something like “Metro waiting on …” and shows a QR code and menu.
-
-3. **Open in your browser (easiest)**  
-   In that **same terminal**, press **`w`**.  
-   The Duck U app will open in your browser. No phone and no QR scanning.
-
-4. **If you want to use your phone later**  
-   The **QR code appears only in that same terminal** (the one where `npx expo start` is running).  
-   - On **iPhone**: open the Camera app and point it at the QR code in the terminal.  
-   - On **Android**: open the Expo Go app and use “Scan QR code” and point it at the terminal.  
-   If you don’t see a QR in Cursor’s terminal, run `npx expo start` in a normal PowerShell or Command Prompt window instead; the QR will show there.
+> **Don't be Wack, Do Quack!**
+>
+> A gamified, IRL duck-sharing game for Jeep owners (and anyone else who wants to get ducked). Scan another player's QR sticker, earn points, climb the leaderboard.
 
 ---
 
-## Quick start (Firebase + deploy)
+## Status
 
-### 1. Firebase
+**Phase 1  — Core gameplay complete.** Native Android dev build running via EAS Build. Ready for polish, then beta testers.
 
-1. Create a project at [Firebase Console](https://console.firebase.google.com).
-2. Enable **Authentication** (Email/Password; Google and Apple optional).
-3. Create **Firestore** and **Storage**.
-4. Copy `duck-u/.env.example` to `duck-u/.env` and fill in your Firebase config.
+| Area                           | Status |
+|---------------------------------|--------|
+| Auth (signup / signin / persistence / show-password / forgot-password) | ✅     |
+| Onboarding + QR generation                                    | ✅     |
+| Profile (read / edit / realtime cross-device sync)          | ✅     |
+| Scanner (single-fire lock, personalized "You ducked X{" wording)    | ✅     |
+| Cloud Function scoring (first-duck bonus, night owl, revenge, chains)   | ✅     |
+| Weekly leaderboard snapshot (Cloud Function, scheduled Sunday 00:00 UTC)  | ✅     |
+| Three-tab navigation (Home / Leaderboard / Profile)         | ✅     |
+| Firestore rules + indexes deployed                               | ✅     |
+| Native dev build (Android APK via EAS)                       | ✅     |
+| Push notifications                                          | ⚺ Phase 2 |
+| Quack sound / haptic                                           | ⚺ Phase 2 |
+| Web companion (Firebase Hosting)                             | ⚺ Phase 2 |
+| iOS build                                                         | ⚺ Phase 2 |
+| Google Play submission                                      | ⚺ Phase 2 |
 
-See **`docs/firebase-setup.md`** for full steps.
+---
 
-### 2. App (run locally)
+## Stack
 
-```bash
-cd duck-u
-npm install
-# Add your .env with EXPO_PUBLIC_FIREBASE_*
-npx expo start
-# Then press w for web, or use the QR in this terminal on your phone
+-**Client:** React Native 0.81.5 / Expo SDK 54, TypeScript, React Navigation v7 (stack + bottom tabs)
+- **Auth:** Firebase Auth (email/password, persisted via `@react-native-async-storage`)
+- **DB:** Cloud Firestore (realtime `onSnapshot` for profile sync)
+- **Backend logic:** Firebase Cloud Functions (v1, TS, Node 20)
+- **Camera + QR scan:** `expo-camera`
+- **QR generation:** `react-native-qrcode-svg`
+- **Build:** EAS Build (profile: `development`, Android APK)
+
+---
+
+## Repo layout
+
+```
+.
+├── App.tsx                  # Root navigator / gates/error boundary
+├── index.tsx                 # Expo entry point
+├── app.json                  # Expo config (slug=duck-u, camera perm, adaptive icon)
+├── eas.json                  # EAS Build profiles (dev / preview / prod)
+-├── .env.example              # Firebase public config template
+├── firebase.json             # Firebase CLI config (rules / indexes / functions)
+-├── firestore.rules           # Security rules
+-├── firestore.indexes.json   # Composite indexes
+├── functions/                # Cloud Functions (TS, Node 20)
+├── src/
+│  ├── config/                # Firebase init
+-│  ├── constants/             # Env readers
+│  ├── contexts/              # AuthContext (realtime profile sync)
+│  ├── screens/               # Auth / Onboarding / Home / Scanner / Leaderboard / Profile
+-│  ├── services/              # duckService / userService
+-│  ├── types/                 # UserProfile / DuckEvent / WeeklyLeaderboardDoc
+-│  └── utils/qr.ts            # QR payload gen/parse
+└── docs/plans/              # Original design + implementation plans
 ```
 
-### 3. Cloud Functions
+---
 
-```bash
-cd functions
+## Data model
+
+**`users/{uid}`**
+- `uid`, `username`, `displayName`, `avatarUrl`, `jeepNickname`, `jeepColor`
+- `totalDucksGiven`, `totalDucksReceived`, `totalPoints`
+- `currentStreak`, `bestStreak`
+- `rankTitle` — derived from `totalPoints` (Sitting Duck / Quack Lord / Quack Assassin / Supreme Duckinator)
+- `badges[]`, `onboarded`, `pushToken` (Phase 2)
+
+**`duckEvents/{eventId}`**  (append-only)
+- `fromUid`, `toUid`, `timestamp`
+- Written by scanner; Cloud Function fills in `pointsAwarded`, `isRevenge`, `chainLength` on create.
+
+**`leaderboards/{weekStart}_{userId}`**
+- `weekStart` (ISO YYYY-MM-DD, UTC Monday), `userId`, `score`, `rank`
+- Generated every Sunday at 00:00 UTC by `weeklyLeaderboardSnapshot`.
+
+---
+
+## Scoring rules (source of truth: `functions/src/index.ts`)
+
+| Event                         | Points      |
+|-------------------------------|-------------|
+| First time ducking a new user | +5          |
+| Regular duck                  | +3          |
+| Night Owl bonus (10PM – 6AM UTC) | +2          |
+| Revenge (they ducked you first) | double points |
+| Duck chain (3–+ ducks in a row) | +10 bonus + double points |
+| Self-duck (shame!)             | –5           |
+
+---
+
+## Local development
+
+### Prerequisites
+- Node 20.19+
+- Firebase CLI (`npm i -g firebase-tools`)  — logged in to the `duck-u` project
+- EAS CLI (`npm i -g eas-cli`)  — logged in as `onlydanz`
+
+### Setup
+
+```sh
 npm install
+cp .env.example .env
+# Edit .env with firebase project config (apiKey, projectId, etc.)
+```
+
+### Run client (dev build mode)
+
+```sh
+npx expo start --dev-client
+```
+Open the installed \"Duck U\" APK on your Android device (not Expo Go).
+
+### Run Cloud Functions build check
+
+```sh
+cd functions
 npm run build
+```
+
+### Deploy Firebase rules / indexes / functions
+
+```sh
+firebase deploy --only firestore:rules,firestore:indexes
 firebase deploy --only functions
 ```
 
-Deploy rules and indexes from repo root:
+### Build a new Android dev APK
 
-```bash
-firebase deploy --only firestore
+```sh
+expo start --dev-client   # if running
+Ctrl+C
+eas build --profile development --platform android
 ```
 
-## Features (MVP)
+---
 
-- **Auth:** Email/password sign up & sign in (Google/Apple optional).
-- **Profile:** Username (default "JeepQuack42"), optional Jeep nickname/color, stats.
-- **Personal QR:** One QR per user; "Print me!" / share.
-- **Scanner:** Scan any Duck U QR → "You've been ducked!" + points and bonuses.
-- **Scoring:** First duck 5 pts, regular 3 pts; Night Owl +2, Revenge ×2, Duck Chain +10 and double.
-- **Leaderboard:** Weekly (from Cloud Function snapshot) and all-time.
-- **Push:** "You just got ducked by …" (store FCM/Expo token in `users.pushToken`).
+## Push notifications
 
-## Scoring (Cloud Function)
+**Not wired up yet (Phase 2).**  The Cloud Function already attempts FCM sends to `users.{uid}.pushToken` but the client never registers one.  To add:
 
-- First duck on a user: **5 pts**. Regular: **3 pts**.
-- **Night Owl** (10pm–6am UTC): +2.
-- **Revenge** (they ducked you first): ×2.
-- **Duck Chain** (3+ ducks given in a row): +10 and ×2.
-- **Self-duck:** −5 pts.
+1. `npx expo install expo-notifications`
+2. On app launch, request permission + fetch Expo push token, write to `users/{uid}.pushToken`.
+3. Switch the Cloud Function from raw `admin.messaging()` to Expo's push API (https://expo.dev/notifications).
+4. Test end-to-end in the dev build.
 
-Titles: 0–10 Sitting Duck, 50+ Quack Assassin, 200+ Supreme Duckinator. Top 3 weekly: "Lord of the Pond".
+---
 
-## Privacy
+## Known issues
 
-- QR is opt-in only. No license plate storage. Location optional and only for future bonuses. Data deletion available from profile.
+- **Engine warnings** for packages preferring Node ≥ 20.19.4. Current Node is 20.19.0. Cosmetic, non-blocking.
+- **12 moderate npm vulnerabilities** from transitive RN deps. Dependabot will surface patches as they ship upstream.
+- **Obsolete `expo-av` warning**: `expo-av` is deprecated in SDK 54, replaced by `expo-audio`/`expo-video`. Cleanup due in Phase 2.
+- **Liner-full \"Text strings must be rendered within <Text>\" dev-warnings** (Expo Go): Gone in dev build.
 
-## License
+---
 
-Private / your choice.
+## Next steps
+
+1. Polish (now): quack sound, haptic buzz on duck, recent ducks feed, empty-state copy, icon polish.
+2. Beta test with 5–10 real humans (share the EAS build link).
+3. Push notifications (Phase 2).
+4. Web companion (Firebase Hosting) — profile pages at `ducku.app/profile/{uid}` that anyone can scan, whether they installed the app or not.
+
+---
+
+_Consolidated from [Danticipation/Duck-U](https://github.com/Danticipation/Duck-U) (archived) into this repo 2026-04-28.  Original design plans under `docs/plans/` are historical — refer to this README for current state._

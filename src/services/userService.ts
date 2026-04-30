@@ -2,7 +2,6 @@ import {
   doc,
   getDoc,
   setDoc,
-  updateDoc,
   getDocs,
   collection,
   query,
@@ -15,12 +14,11 @@ import type { UserProfile, WeeklyLeaderboardDoc } from '../types';
 
 const USERS = 'users';
 const DEFAULT_USERNAME = 'JeepQuack42';
-const FOUNDING_DUCKER_LIMIT = 100;
 
 export async function getUserProfile(uid: string): Promise<UserProfile | null> {
   const ref = doc(db, USERS, uid);
   const snap = await getDoc(ref);
-  if (!snap.exists()) return null;
+  if (!snap.exists) return null;
   return { uid: snap.id, ...snap.data() } as UserProfile;
 }
 
@@ -28,8 +26,10 @@ export async function createUserProfile(
   uid: string,
   data: Partial<UserProfile>
 ): Promise<UserProfile> {
-  const userCount = await getDocs(collection(db, USERS)).then((s) => s.size);
-  const badges = userCount < FOUNDING_DUCKER_LIMIT ? ['Founding Ducker'] : [];
+  // TODO: re-add "Founding Ducker" badge logic via a Cloud Function or counter doc.
+  // Listing the entire users collection on every signup was an antipattern and
+  // also failed under Firestore rules that allow per-doc reads but not list.
+  const badges: string[] = [];
 
   const profile: Omit<UserProfile, 'uid'> & { uid: string } = {
     uid,
@@ -56,13 +56,28 @@ export async function createUserProfile(
 
 export async function updateUserProfile(
   uid: string,
-  updates: Partial<Pick<UserProfile, 'username' | 'displayName' | 'avatarUrl' | 'jeepNickname' | 'jeepColor' | 'onboarded' | 'pushToken'>>
+  updates: Partial<
+    Pick<
+      UserProfile,
+      | 'username'
+      | 'displayName'
+      | 'avatarUrl'
+      | 'jeepNickname'
+      | 'jeepColor'
+      | 'onboarded'
+      | 'pushToken'
+    >
+  >
 ): Promise<void> {
   const ref = doc(db, USERS, uid);
-  await updateDoc(ref, updates as Record<string, unknown>);
+  // Use setDoc with merge so the call works whether the doc exists yet or not.
+  // Avoids the "permission-denied / not-found" hang from updateDoc on a missing doc.
+  await setDoc(ref, updates as Record<string, unknown>, { merge: true });
 }
 
-export async function getAllTimeLeaderboard(limitCount: number = 50): Promise<UserProfile[]> {
+export async function getAllTimeLeaderboard(
+  limitCount: number = 50
+): Promise<UserProfile[]> {
   const q = query(
     collection(db, USERS),
     orderBy('totalPoints', 'desc'),
@@ -81,7 +96,14 @@ function getWeekStart(date: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
-export async function getWeeklyLeaderboard(limitCount: number = 50): Promise<(WeeklyLeaderboardDoc & { username?: string; displayName?: string })[]> {
+type WeeklyLeaderboardRow = WeeklyLeaderboardDoc & {
+  username?: string;
+  displayName?: string;
+};
+
+export async function getWeeklyLeaderboard(
+  limitCount: number = 50
+): Promise<WeeklyLeaderboardRow[]> {
   const weekStart = getWeekStart(new Date());
   const q = query(
     collection(db, 'leaderboards'),
@@ -90,7 +112,10 @@ export async function getWeeklyLeaderboard(limitCount: number = 50): Promise<(We
     limit(limitCount)
   );
   const snap = await getDocs(q);
-  const entries = snap.docs.map((d) => ({ ...d.data(), userId: d.data().userId })) as (WeeklyLeaderboardDoc & { username?: string; displayName?: string })[];
+  const entries = snap.docs.map(
+    (d) =>
+      ({ ...d.data(), userId: d.data().userId } as WeeklyLeaderboardRow)
+  );
   for (const e of entries) {
     const profile = await getUserProfile(e.userId);
     if (profile) {

@@ -1,14 +1,11 @@
-import QRCode from 'qrcode';
-
 const PROFILE_SCHEME = 'ducku://profile';
 
 /**
- * Generate a QR code data URL for a user's profile (by uid).
- * Used for "duck me" stickers and sharing.
+ * Build the QR payload string for a user's profile.
+ * This is what gets rendered into a QR code and scanned by others.
  */
-export async function generateProfileQRDataUrl(uid: string): Promise<string> {
-  const payload = `${PROFILE_SCHEME}/${uid}`;
-  return QRCode.toDataURL(payload, { width: 400, margin: 2 });
+export function getProfileQRPayload(uid: string): string {
+  return `${PROFILE_SCHEME}/${uid}`;
 }
 
 /**

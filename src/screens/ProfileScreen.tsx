@@ -5,15 +5,15 @@ import {
   TextInput,
   TouchableOpacity,
   StyleSheet,
-  Image,
   ScrollView,
   Alert,
 } from 'react-native';
+import QRCode from 'react-native-qrcode-svg';
 import { signOut } from 'firebase/auth';
 import { auth } from '../config/firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { updateUserProfile } from '../services/userService';
-import { generateProfileQRDataUrl } from '../utils/qr';
+import { getProfileQRPayload } from '../utils/qr';
 
 export default function ProfileScreen() {
   const { user, profile, refreshProfile } = useAuth();
@@ -22,7 +22,6 @@ export default function ProfileScreen() {
   const [displayName, setDisplayName] = useState(profile?.displayName ?? '');
   const [jeepNickname, setJeepNickname] = useState(profile?.jeepNickname ?? '');
   const [jeepColor, setJeepColor] = useState(profile?.jeepColor ?? '');
-  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -31,11 +30,6 @@ export default function ProfileScreen() {
     setJeepNickname(profile?.jeepNickname ?? '');
     setJeepColor(profile?.jeepColor ?? '');
   }, [profile]);
-
-  useEffect(() => {
-    if (!user) return;
-    generateProfileQRDataUrl(user.uid).then(setQrDataUrl);
-  }, [user?.uid]);
 
   const handleSave = async () => {
     if (!user) return;
@@ -58,61 +52,39 @@ export default function ProfileScreen() {
   const handleDataDeletion = () => {
     Alert.alert(
       'Delete my data',
-      'This will remove your account and duck history. Contact support or use Firebase Console for full deletion. (Implement Cloud Function for full delete.)'
+      'This will remove your account and duck history. Contact support or use Firebase Console for full deletion.'
     );
   };
 
-  if (!profile) return null;
+  if (!profile || !user) return null;
+
+  const qrValue = getProfileQRPayload(user.uid);
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.title}>Profile</Text>
-      {profile.avatarUrl ? (
-        <Image source={{ uri: profile.avatarUrl }} style={styles.avatar} />
-      ) : (
-        <View style={styles.avatarPlaceholder}>
-          <Text style={styles.avatarEmoji}>🦆</Text>
-        </View>
-      )}
+      <View style={styles.avatarPlaceholder}>
+        <Text style={styles.avatarLetter}>D</Text>
+      </View>
       {editing ? (
-        <>
-          <TextInput
-            style={styles.input}
-            value={username}
-            onChangeText={setUsername}
-            placeholder="Username"
-          />
-          <TextInput
-            style={styles.input}
-            value={displayName}
-            onChangeText={setDisplayName}
-            placeholder="Display name"
-          />
-          <TextInput
-            style={styles.input}
-            value={jeepNickname}
-            onChangeText={setJeepNickname}
-            placeholder="Jeep nickname (optional)"
-          />
-          <TextInput
-            style={styles.input}
-            value={jeepColor}
-            onChangeText={setJeepColor}
-            placeholder="Jeep color (optional)"
-          />
+        <View>
+          <TextInput style={styles.input} value={username} onChangeText={setUsername} placeholder="Username" />
+          <TextInput style={styles.input} value={displayName} onChangeText={setDisplayName} placeholder="Display name" />
+          <TextInput style={styles.input} value={jeepNickname} onChangeText={setJeepNickname} placeholder="Jeep nickname (optional)" />
+          <TextInput style={styles.input} value={jeepColor} onChangeText={setJeepColor} placeholder="Jeep color (optional)" />
           <TouchableOpacity style={styles.button} onPress={handleSave} disabled={saving}>
             <Text style={styles.buttonText}>Save</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.outlineButton} onPress={() => setEditing(false)}>
             <Text style={styles.outlineButtonText}>Cancel</Text>
           </TouchableOpacity>
-        </>
+        </View>
       ) : (
-        <>
+        <View>
           <Text style={styles.displayName}>{profile.displayName || profile.username}</Text>
           <Text style={styles.rankTitle}>{profile.rankTitle}</Text>
-          {profile.badges?.length ? (
-            <Text style={styles.badges}>{profile.badges.join(' • ')}</Text>
+          {profile.badges && profile.badges.length > 0 ? (
+            <Text style={styles.badges}>{profile.badges.join(' - ')}</Text>
           ) : null}
           <View style={styles.stats}>
             <Text>Ducks given: {profile.totalDucksGiven}</Text>
@@ -123,17 +95,18 @@ export default function ProfileScreen() {
           <TouchableOpacity style={styles.outlineButton} onPress={() => setEditing(true)}>
             <Text style={styles.outlineButtonText}>Edit profile</Text>
           </TouchableOpacity>
-        </>
+        </View>
       )}
-      {qrDataUrl && (
-        <>
-          <Text style={styles.sectionTitle}>My QR code</Text>
-          <Image source={{ uri: qrDataUrl }} style={styles.qr} />
-          <TouchableOpacity style={styles.button} onPress={() => Alert.alert('Print me!', 'Save or share this QR from your gallery.')}>
-            <Text style={styles.buttonText}>Print me! / Share</Text>
-          </TouchableOpacity>
-        </>
-      )}
+      <Text style={styles.sectionTitle}>My QR code</Text>
+      <View style={styles.qrWrap}>
+        <QRCode value={qrValue} size={200} />
+      </View>
+      <TouchableOpacity
+        style={styles.button}
+        onPress={() => Alert.alert('Print me!', 'Show this QR to let others duck you.')}
+      >
+        <Text style={styles.buttonText}>Print me! / Share</Text>
+      </TouchableOpacity>
       <TouchableOpacity style={styles.dataButton} onPress={handleDataDeletion}>
         <Text style={styles.dataButtonText}>Data deletion</Text>
       </TouchableOpacity>
@@ -148,20 +121,41 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#E6F4FE' },
   content: { padding: 24, paddingBottom: 48 },
   title: { fontSize: 24, fontWeight: 'bold', marginBottom: 16, textAlign: 'center' },
-  avatar: { width: 80, height: 80, borderRadius: 40, alignSelf: 'center', marginBottom: 8 },
-  avatarPlaceholder: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#FFB800', alignSelf: 'center', justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
-  avatarEmoji: { fontSize: 40 },
+  avatarPlaceholder: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: '#FFB800',
+    alignSelf: 'center',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  avatarLetter: { fontSize: 40, fontWeight: 'bold', color: '#1a1a2e' },
   displayName: { fontSize: 18, fontWeight: '600', textAlign: 'center', marginBottom: 4 },
   rankTitle: { fontSize: 14, color: '#555', textAlign: 'center', marginBottom: 8 },
   badges: { fontSize: 12, color: '#2563eb', textAlign: 'center', marginBottom: 16 },
   stats: { marginBottom: 16, gap: 4 },
-  input: { borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 12, marginBottom: 12, backgroundColor: '#fff' },
-  button: { backgroundColor: '#FFB800', padding: 16, borderRadius: 8, alignItems: 'center', marginBottom: 8 },
+  input: {
+    borderWidth: 1,
+    borderColor: '#ccc',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 12,
+    backgroundColor: '#fff',
+  },
+  button: {
+    backgroundColor: '#FFB800',
+    padding: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginBottom: 8,
+  },
   outlineButton: { padding: 16, alignItems: 'center', marginBottom: 16 },
   outlineButtonText: { color: '#2563eb', fontWeight: '600' },
   buttonText: { color: '#1a1a2e', fontWeight: '600' },
-  sectionTitle: { fontSize: 16, fontWeight: '600', marginTop: 24, marginBottom: 12 },
-  qr: { width: 200, height: 200, alignSelf: 'center', marginBottom: 12 },
+  sectionTitle: { fontSize: 16, fontWeight: '600', marginTop: 24, marginBottom: 12, textAlign: 'center' },
+  qrWrap: { alignItems: 'center', marginBottom: 16 },
   dataButton: { marginTop: 24, padding: 12 },
   dataButtonText: { color: '#666', textAlign: 'center' },
   signOut: { marginTop: 8, padding: 12 },

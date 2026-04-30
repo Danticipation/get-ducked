@@ -5,20 +5,19 @@ import {
   TextInput,
   TouchableOpacity,
   StyleSheet,
-  Image,
   ActivityIndicator,
   Alert,
 } from 'react-native';
-import * as Sharing from 'expo-sharing';
+import QRCode from 'react-native-qrcode-svg';
 import { useAuth } from '../contexts/AuthContext';
 import { updateUserProfile } from '../services/userService';
-import { generateProfileQRDataUrl } from '../utils/qr';
+import { getProfileQRPayload } from '../utils/qr';
 
 export default function OnboardingScreen({ onComplete }: { onComplete: () => void }) {
   const { user, profile, refreshProfile } = useAuth();
   const [username, setUsername] = useState(profile?.username ?? 'JeepQuack42');
   const [saving, setSaving] = useState(false);
-  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [qrReady, setQrReady] = useState(false);
 
   const handleSave = async () => {
     if (!user) return;
@@ -26,34 +25,20 @@ export default function OnboardingScreen({ onComplete }: { onComplete: () => voi
     try {
       await updateUserProfile(user.uid, { username, displayName: username, onboarded: true });
       await refreshProfile();
-      const url = await generateProfileQRDataUrl(user.uid);
-      setQrDataUrl(url);
+      setQrReady(true);
     } catch (e) {
-      Alert.alert('Error', 'Could not save profile');
+      const msg = e instanceof Error ? e.message : 'Unknown error';
+      Alert.alert('Error', 'Could not save profile: ' + msg);
     } finally {
       setSaving(false);
     }
-  };
-
-  const handlePrintMe = async () => {
-    if (!qrDataUrl) return;
-    try {
-      const canShare = await Sharing.isAvailableAsync();
-      if (canShare) {
-        // Sharing with image: would need to write to file first; for MVP we show alert
-        Alert.alert(
-          'Print / Share',
-          'Save your QR from the Profile tab and share or print it. Coming: direct share.'
-        );
-      }
-    } catch (_) {}
   };
 
   const handleDone = () => {
     onComplete();
   };
 
-  if (!qrDataUrl) {
+  if (!qrReady) {
     return (
       <View style={styles.container}>
         <Text style={styles.title}>Pick your duck name</Text>
@@ -65,26 +50,29 @@ export default function OnboardingScreen({ onComplete }: { onComplete: () => voi
           autoCapitalize="none"
         />
         <TouchableOpacity
-          style={[styles.button, saving && styles.buttonDisabled]}
+          style={[styles.button, saving ? styles.buttonDisabled : null]}
           onPress={handleSave}
           disabled={saving}
         >
-          {saving ? <ActivityIndicator color="#1a1a2e" /> : <Text style={styles.buttonText}>Generate my QR</Text>}
+          {saving ? (
+            <ActivityIndicator color="#1a1a2e" />
+          ) : (
+            <Text style={styles.buttonText}>Generate my QR</Text>
+          )}
         </TouchableOpacity>
       </View>
     );
   }
 
+  const qrValue = user ? getProfileQRPayload(user.uid) : '';
+
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Your Duck QR</Text>
       <Text style={styles.subtitle}>Scan this to get ducked!</Text>
-      {qrDataUrl ? (
-        <Image source={{ uri: qrDataUrl }} style={styles.qr} />
-      ) : null}
-      <TouchableOpacity style={styles.button} onPress={handlePrintMe}>
-        <Text style={styles.buttonText}>Print me!</Text>
-      </TouchableOpacity>
+      <View style={styles.qrWrap}>
+        <QRCode value={qrValue} size={240} />
+      </View>
       <TouchableOpacity style={styles.primaryButton} onPress={handleDone}>
         <Text style={styles.buttonText}>Done</Text>
       </TouchableOpacity>
@@ -105,7 +93,7 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     backgroundColor: '#fff',
   },
-  qr: { width: 256, height: 256, alignSelf: 'center', marginBottom: 24 },
+  qrWrap: { alignItems: 'center', marginVertical: 24 },
   button: {
     backgroundColor: '#fff',
     padding: 16,
