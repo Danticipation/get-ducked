@@ -1,5 +1,17 @@
-import { collection, addDoc, serverTimestamp, doc, getDoc } from 'firebase/firestore';
+import {
+  collection,
+  addDoc,
+  serverTimestamp,
+  doc,
+  getDoc,
+  getDocs,
+  query,
+  where,
+  orderBy,
+  limit as qlimit,
+} from 'firebase/firestore';
 import { db } from '../config/firebase';
+import { getUserProfile } from './userService';
 
 const DUCK_EVENTS = 'duckEvents';
 
@@ -14,6 +26,16 @@ export interface DuckEventResult {
   pointsAwarded?: number;
   isRevenge?: boolean;
   chainLength?: number;
+}
+
+export interface RecentDuckEntry {
+  eventId: string;
+  direction: 'gave' | 'received';
+  otherUid: string;
+  otherDisplayName: string;
+  pointsAwarded?: number;
+  isRevenge?: boolean;
+  timestampMs: number;
 }
 
 /**
@@ -42,4 +64,77 @@ export async function recordDuck(params: RecordDuckParams): Promise<DuckEventRes
     }
   }
   return { eventId: ref.id, pointsAwarded, isRevenge, chainLength };
+}
+
+/**
+ * Fetch recent duck events involving this user (either as giver or receiver).
+ * Limited to `n` per direction, merged and sorted by timestamp desc. Returns up to `n` total.
+ */
+export async function getRecentDucks(uid: string, n: number = 10): Promise<RecentDuckEntry[]> {
+  const gaveQ = query(
+    collection(db, DUCK_EVENTS),
+    where('fromUid', '==', uid),
+    orderBy('timestamp', 'desc'),
+    qlimit(n)
+  );
+  const receivedQ = query(
+    collection(db, DUCK_EVENTS),
+    where('toUid', '==', uid),
+    orderBy('timestamp', 'desc'),
+    qlimit(n)
+  );
+
+  const [gaveSnap, receivedSnap] = await Promise.all([
+    getDocs(gaveQ),
+    getDocs(receivedQ),
+  ]);
+
+  const raw: RecentDuckEntry[] = [];
+  gaveSnap.docs.forEach((d) => {
+    const data = d.data();
+    if (!data) return;
+    const ts = data.timestamp;
+    const ms = ts?.toMillis?.() ?? 0;
+    raw.push({
+      eventId: d.id,
+      direction: 'gave',
+      otherUid: (data.toUid as string) || '',
+      otherDisplayName: '',
+      pointsAwarded: data.pointsAwarded,
+      isRevenge: data.isRevenge,
+      timestampMs: ms,
+    });
+  });
+  receivedSnap.docs.forEach((d) => {
+    const data = d.data();
+    if (!data) return;
+    const ts = data.timestamp;
+    const ms = ts?.toMillis?.() ?? 0;
+    raw.push({
+      eventId: d.id,
+      direction: 'received',
+      otherUid: (data.fromUid as string) || '',
+      otherDisplayName: '',
+      pointsAwarded: data.pointsAwarded,
+      isRevenge: data.isRevenge,
+      timestampMs: ms,
+    });
+  });
+
+  raw.sort((a, b) => b.timestampMs - a.timestampMs);
+  const top = raw.slice(0, n);
+
+  // Cache display names across distinct UIDs to minimize reads.
+  const uniqueUids = Array.from(new Set(top.map((e) => e.otherUid).filter(Boolean)));
+  const nameMap: Record<string, string> = {};
+  await Promise.all(
+    uniqueUids.map(async (u) => {
+      const p = await getUserProfile(u);
+      nameMap[u] = p?.displayName || p?.username || 'Ducker';
+    })
+  );
+  top.forEach((e) => {
+    e.otherDisplayName = nameMap[e.otherUid] || 'Ducker';
+  });
+  return top;
 }

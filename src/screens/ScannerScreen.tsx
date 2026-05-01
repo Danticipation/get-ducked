@@ -8,10 +8,41 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as Haptics from 'expo-haptics';
+import { Audio } from 'expo-av';
 import { useAuth } from '../contexts/AuthContext';
 import { parseProfileFromQR } from '../utils/qr';
 import { recordDuck } from '../services/duckService';
 import { getUserProfile } from '../services/userService';
+import { postScanHeadline } from '../utils/storyMessages';
+
+const QUACK = require('../../assets/sounds/quack.wav');
+
+async function playQuack() {
+  try {
+    const { sound } = await Audio.Sound.createAsync(QUACK);
+    await sound.playAsync();
+    sound.setOnPlaybackStatusUpdate((s) => {
+      if (s.isLoaded && s.didJustFinish) {
+        sound.unloadAsync().catch(() => {});
+      }
+    });
+  } catch (e) {
+    console.warn('quack playback failed:', e);
+  }
+}
+
+async function successBuzz() {
+  try {
+    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  } catch (_) {}
+}
+
+async function failBuzz() {
+  try {
+    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+  } catch (_) {}
+}
 
 export default function ScannerScreen({ onBack }: { onBack: () => void }) {
   const [permission, requestPermission] = useCameraPermissions();
@@ -19,12 +50,11 @@ export default function ScannerScreen({ onBack }: { onBack: () => void }) {
   const [processing, setProcessing] = useState(false);
   const [lastResult, setLastResult] = useState<{
     points?: number;
-    message: string;
+    headline: string;
+    tags?: string[];
   } | null>(null);
   const { user, refreshProfile } = useAuth();
 
-  // Synchronous lock - prevents duplicate scans from firing in the same frame window
-  // before React processes setScanned(true).
   const scanLockRef = useRef(false);
 
   const handleBarCodeScanned = useCallback(
@@ -36,6 +66,7 @@ export default function ScannerScreen({ onBack }: { onBack: () => void }) {
 
       const toUid = parseProfileFromQR(data);
       if (!toUid) {
+        failBuzz();
         Alert.alert('Quack Fail', 'Invalid or expired QR code.');
         scanLockRef.current = false;
         setScanned(false);
@@ -43,11 +74,16 @@ export default function ScannerScreen({ onBack }: { onBack: () => void }) {
       }
 
       if (toUid === user.uid) {
-        Alert.alert('Self-duck!', '-5 pts. Shame badge.');
+        failBuzz();
         setProcessing(true);
         try {
-          await recordDuck({ fromUid: user.uid, toUid });
-          await refreshProfile();
+          const result = await recordDuck({ fromUid: user.uid, toUid });
+          const pts = result.pointsAwarded ?? -5;
+          setLastResult({
+            headline: postScanHeadline({ targetName: 'yourself', isSelfDuck: true }),
+            points: pts,
+            tags: ['self-duck'],
+          });
         } finally {
           setProcessing(false);
         }
@@ -56,25 +92,33 @@ export default function ScannerScreen({ onBack }: { onBack: () => void }) {
 
       setProcessing(true);
       try {
-        // Kick off the duck write and the target's display name lookup in parallel.
         const [result, targetProfile] = await Promise.all([
           recordDuck({ fromUid: user.uid, toUid }),
           getUserProfile(toUid),
         ]);
-        await refreshProfile();
+
+        successBuzz();
+        playQuack();
 
         const targetName =
           targetProfile?.displayName ||
           targetProfile?.username ||
           'them';
         const pts = result.pointsAwarded ?? 0;
-        let message = `You ducked ${targetName}!`;
-        if (result.isRevenge) message += ' Revenge!';
+        const headline = postScanHeadline({
+          targetName,
+          isRevenge: result.isRevenge,
+          chainLength: result.chainLength,
+          timestampMs: Date.now(),
+        });
+        const tags: string[] = [];
+        if (result.isRevenge) tags.push('revenge');
         if (result.chainLength && result.chainLength >= 3) {
-          message += ' Duck Chain!';
+          tags.push(`${result.chainLength}-chain`);
         }
-        setLastResult({ message, points: pts });
+        setLastResult({ headline, points: pts, tags });
       } catch (e) {
+        failBuzz();
         const msg = e instanceof Error ? e.message : 'Try again.';
         Alert.alert('Duck failed', msg);
       } finally {
@@ -127,14 +171,17 @@ export default function ScannerScreen({ onBack }: { onBack: () => void }) {
         {processing ? (
           <View style={styles.result}>
             <ActivityIndicator color="#fff" />
-            <Text style={styles.resultText}>Recording duck...</Text>
+            <Text style={styles.resultText}>Ducking...</Text>
           </View>
         ) : null}
         {lastResult && !processing ? (
           <View style={styles.result}>
-            <Text style={styles.resultText}>{lastResult.message}</Text>
+            <Text style={styles.resultText}>{lastResult.headline}</Text>
+            {lastResult.tags && lastResult.tags.length > 0 ? (
+              <Text style={styles.resultTags}>{lastResult.tags.map((t) => `#${t}`).join(' ')}</Text>
+            ) : null}
             {lastResult.points != null ? (
-              <Text style={styles.points}>+{lastResult.points} pts</Text>
+              <Text style={styles.points}>{lastResult.points >= 0 ? '+' : ''}{lastResult.points} pts</Text>
             ) : null}
             <TouchableOpacity style={styles.button} onPress={handleScanAgain}>
               <Text style={styles.buttonText}>Scan again</Text>
@@ -153,7 +200,8 @@ const styles = StyleSheet.create({
   button: { backgroundColor: '#FFB800', padding: 16, borderRadius: 8, alignItems: 'center' },
   backButton: { backgroundColor: 'rgba(0,0,0,0.5)', padding: 12, borderRadius: 8, alignSelf: 'flex-start' },
   buttonText: { color: '#1a1a2e', fontWeight: '600' },
-  result: { backgroundColor: 'rgba(0,0,0,0.7)', padding: 24, borderRadius: 12, alignItems: 'center', gap: 8 },
+  result: { backgroundColor: 'rgba(0,0,0,0.8)', padding: 24, borderRadius: 12, alignItems: 'center', gap: 6 },
   resultText: { color: '#fff', fontSize: 18, textAlign: 'center' },
-  points: { color: '#FFB800', fontSize: 24, fontWeight: 'bold' },
+  resultTags: { color: '#9ca3af', fontSize: 12, textAlign: 'center' },
+  points: { color: '#FFB800', fontSize: 24, fontWeight: 'bold', marginTop: 4 },
 });
